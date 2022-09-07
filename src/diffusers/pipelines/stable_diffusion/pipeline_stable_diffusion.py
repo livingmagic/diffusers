@@ -6,6 +6,7 @@ import torch
 
 from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
 
+from .stable_utils import torch_randn
 from ...models import AutoencoderKL, UNet2DConditionModel
 from ...pipeline_utils import DiffusionPipeline
 from ...schedulers import DDIMScheduler, LMSDiscreteScheduler, PNDMScheduler
@@ -15,14 +16,14 @@ from .safety_checker import StableDiffusionSafetyChecker
 
 class StableDiffusionPipeline(DiffusionPipeline):
     def __init__(
-        self,
-        vae: AutoencoderKL,
-        text_encoder: CLIPTextModel,
-        tokenizer: CLIPTokenizer,
-        unet: UNet2DConditionModel,
-        scheduler: Union[DDIMScheduler, PNDMScheduler, LMSDiscreteScheduler],
-        safety_checker: StableDiffusionSafetyChecker,
-        feature_extractor: CLIPFeatureExtractor,
+            self,
+            vae: AutoencoderKL,
+            text_encoder: CLIPTextModel,
+            tokenizer: CLIPTokenizer,
+            unet: UNet2DConditionModel,
+            scheduler: Union[DDIMScheduler, PNDMScheduler, LMSDiscreteScheduler],
+            safety_checker: StableDiffusionSafetyChecker,
+            feature_extractor: CLIPFeatureExtractor,
     ):
         super().__init__()
         scheduler = scheduler.set_format("pt")
@@ -38,18 +39,19 @@ class StableDiffusionPipeline(DiffusionPipeline):
 
     @torch.no_grad()
     def __call__(
-        self,
-        prompt: Union[str, List[str]],
-        height: Optional[int] = 512,
-        width: Optional[int] = 512,
-        num_inference_steps: Optional[int] = 50,
-        guidance_scale: Optional[float] = 7.5,
-        eta: Optional[float] = 0.0,
-        generator: Optional[torch.Generator] = None,
-        latents: Optional[torch.FloatTensor] = None,
-        output_type: Optional[str] = "pil",
-        return_dict: bool = True,
-        **kwargs,
+            self,
+            prompt: Union[str, List[str]],
+            height: Optional[int] = 512,
+            width: Optional[int] = 512,
+            num_inference_steps: Optional[int] = 50,
+            guidance_scale: Optional[float] = 7.5,
+            eta: Optional[float] = 0.0,
+            seeds: Optional[int, List[int]] = None,
+            latents: Optional[torch.FloatTensor] = None,
+            output_type: Optional[str] = "pil",
+            return_dict: bool = True,
+            nsfw_concept: bool = True,
+            **kwargs,
     ):
         if "torch_device" in kwargs:
             device = kwargs.pop("torch_device")
@@ -103,11 +105,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
         # get the initial random noise unless the user supplied it
         latents_shape = (batch_size, self.unet.in_channels, height // 8, width // 8)
         if latents is None:
-            latents = torch.randn(
-                latents_shape,
-                generator=generator,
-                device=self.device,
-            )
+            latents, seeds = torch_randn(latents_shape, seeds, self.device)
         else:
             if latents.shape != latents_shape:
                 raise ValueError(f"Unexpected latents shape, got {latents.shape}, expected {latents_shape}")
@@ -140,7 +138,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
             if isinstance(self.scheduler, LMSDiscreteScheduler):
                 sigma = self.scheduler.sigmas[i]
                 # the model input needs to be scaled to match the continuous ODE formulation in K-LMS
-                latent_model_input = latent_model_input / ((sigma**2 + 1) ** 0.5)
+                latent_model_input = latent_model_input / ((sigma ** 2 + 1) ** 0.5)
 
             # predict the noise residual
             noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
@@ -164,14 +162,16 @@ class StableDiffusionPipeline(DiffusionPipeline):
         image = image.cpu().permute(0, 2, 3, 1).numpy()
 
         # run safety checker
-        # safety_cheker_input = self.feature_extractor(self.numpy_to_pil(image), return_tensors="pt").to(self.device)
-        # image, has_nsfw_concept = self.safety_checker(images=image, clip_input=safety_cheker_input.pixel_values)
-        has_nsfw_concept = False
+        if nsfw_concept:
+            safety_cheker_input = self.feature_extractor(self.numpy_to_pil(image), return_tensors="pt").to(self.device)
+            image, has_nsfw_concept = self.safety_checker(images=image, clip_input=safety_cheker_input.pixel_values)
+        else:
+            has_nsfw_concept = [False] * batch_size
 
         if output_type == "pil":
             image = self.numpy_to_pil(image)
 
         if not return_dict:
-            return (image, has_nsfw_concept)
+            return image, has_nsfw_concept, seeds
 
-        return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+        return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept, seeds=seeds)

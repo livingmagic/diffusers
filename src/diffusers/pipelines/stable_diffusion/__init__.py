@@ -26,6 +26,7 @@ class StableDiffusionPipelineOutput(BaseOutput):
 
     images: Union[List[PIL.Image.Image], np.ndarray]
     nsfw_content_detected: List[bool]
+    seeds: List[int]
 
 
 if is_transformers_available():
