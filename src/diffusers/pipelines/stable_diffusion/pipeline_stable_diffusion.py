@@ -46,7 +46,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
             num_inference_steps: Optional[int] = 50,
             guidance_scale: Optional[float] = 7.5,
             eta: Optional[float] = 0.0,
-            seeds: Optional[int, List[int]] = None,
+            seeds: Optional[Union[int, List[int]]] = None,
             latents: Optional[torch.FloatTensor] = None,
             output_type: Optional[str] = "pil",
             return_dict: bool = True,
