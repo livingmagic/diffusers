@@ -50,7 +50,6 @@ class StableDiffusionPipeline(DiffusionPipeline):
             latents: Optional[torch.FloatTensor] = None,
             output_type: Optional[str] = "pil",
             return_dict: bool = True,
-            nsfw_concept: bool = True,
             **kwargs,
     ):
         if "torch_device" in kwargs:
@@ -161,17 +160,10 @@ class StableDiffusionPipeline(DiffusionPipeline):
         image = (image / 2 + 0.5).clamp(0, 1)
         image = image.cpu().permute(0, 2, 3, 1).numpy()
 
-        # run safety checker
-        if nsfw_concept:
-            safety_cheker_input = self.feature_extractor(self.numpy_to_pil(image), return_tensors="pt").to(self.device)
-            image, has_nsfw_concept = self.safety_checker(images=image, clip_input=safety_cheker_input.pixel_values)
-        else:
-            has_nsfw_concept = [False] * batch_size
-
         if output_type == "pil":
             image = self.numpy_to_pil(image)
 
         if not return_dict:
-            return image, has_nsfw_concept, seeds
+            return image, seeds
 
-        return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept, seeds=seeds)
+        return StableDiffusionPipelineOutput(images=image, seeds=seeds)
