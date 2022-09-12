@@ -17,7 +17,7 @@ def torch_randn(shape, seeds, device):
     tensors = []
     generator = torch.Generator(device=device)
     if isinstance(seeds, int):
-        seeds = [seeds] * batch_size
+        seeds = [seeds + i for i in range(batch_size)]
     elif seeds is None:
         seeds = [random.randint(0, 2 ** 32) for _ in range(batch_size)]
     assert batch_size == len(seeds)
