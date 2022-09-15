@@ -5,14 +5,12 @@ import numpy as np
 import torch
 
 import PIL
-from tqdm.auto import tqdm
-from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
+from transformers import CLIPTextModel, CLIPTokenizer
 
 from ...models import AutoencoderKL, UNet2DConditionModel
 from ...pipeline_utils import DiffusionPipeline
 from ...schedulers import DDIMScheduler, PNDMScheduler
 from . import StableDiffusionPipelineOutput
-from .safety_checker import StableDiffusionSafetyChecker
 
 
 def preprocess_image(image):
@@ -38,16 +36,22 @@ def preprocess_mask(mask):
     return mask
 
 
+def predict_start_from_noise(scheduler, x_t, t, noise):
+    sqrt_alpha_prod = scheduler.alphas_cumprod[t] ** 0.5
+    sqrt_alpha_prod = scheduler.match_shape(sqrt_alpha_prod, x_t)
+    sqrt_one_minus_alpha_prod = (1 - scheduler.alphas_cumprod[t]) ** 0.5
+    sqrt_one_minus_alpha_prod = scheduler.match_shape(sqrt_one_minus_alpha_prod, x_t)
+    return (x_t - sqrt_one_minus_alpha_prod * noise) / sqrt_alpha_prod
+
+
 class StableDiffusionInpaintPipeline(DiffusionPipeline):
     def __init__(
-        self,
-        vae: AutoencoderKL,
-        text_encoder: CLIPTextModel,
-        tokenizer: CLIPTokenizer,
-        unet: UNet2DConditionModel,
-        scheduler: Union[DDIMScheduler, PNDMScheduler],
-        safety_checker: StableDiffusionSafetyChecker,
-        feature_extractor: CLIPFeatureExtractor,
+            self,
+            vae: AutoencoderKL,
+            text_encoder: CLIPTextModel,
+            tokenizer: CLIPTokenizer,
+            unet: UNet2DConditionModel,
+            scheduler: Union[DDIMScheduler, PNDMScheduler],
     ):
         super().__init__()
         scheduler = scheduler.set_format("pt")
@@ -57,23 +61,22 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
             tokenizer=tokenizer,
             unet=unet,
             scheduler=scheduler,
-            safety_checker=safety_checker,
-            feature_extractor=feature_extractor,
         )
 
     @torch.no_grad()
     def __call__(
-        self,
-        prompt: Union[str, List[str]],
-        init_image: Union[torch.FloatTensor, PIL.Image.Image],
-        mask_image: Union[torch.FloatTensor, PIL.Image.Image],
-        strength: float = 0.8,
-        num_inference_steps: Optional[int] = 50,
-        guidance_scale: Optional[float] = 7.5,
-        eta: Optional[float] = 0.0,
-        generator: Optional[torch.Generator] = None,
-        output_type: Optional[str] = "pil",
-        return_dict: bool = True,
+            self,
+            prompt: Union[str, List[str]],
+            init_image: Union[torch.FloatTensor, PIL.Image.Image],
+            mask_image: Union[torch.FloatTensor, PIL.Image.Image],
+            strength: float = 0.8,
+            num_inference_steps: Optional[int] = 50,
+            resample_times: Optional[int] = 5,
+            guidance_scale: Optional[float] = 7.5,
+            eta: Optional[float] = 0.0,
+            generator: Optional[torch.Generator] = None,
+            output_type: Optional[str] = "pil",
+            return_dict: bool = True,
     ):
 
         if isinstance(prompt, str):
@@ -165,24 +168,38 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
 
         latents = init_latents
         t_start = max(num_inference_steps - init_timestep + offset, 0)
-        for i, t in tqdm(enumerate(self.scheduler.timesteps[t_start:])):
-            # expand the latents if we are doing classifier free guidance
-            latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+        for i, t in enumerate(self.progress_bar(self.scheduler.timesteps[t_start:])):
+            is_last_timestep = t == 0
+            for r in reversed(range(resample_times)):
+                is_last_resample_step = r == 0
+                # expand the latents if we are doing classifier free guidance
+                latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
 
-            # predict the noise residual
-            noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+                # predict the noise residual
+                noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
 
-            # perform guidance
-            if do_classifier_free_guidance:
-                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                # perform guidance
+                if do_classifier_free_guidance:
+                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-            # compute the previous noisy sample x_t -> x_t-1
-            latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
-
-            # masking
-            init_latents_proper = self.scheduler.add_noise(init_latents_orig, noise, t)
-            latents = (init_latents_proper * mask) + (latents * (1 - mask))
+                # compute the previous noisy sample x_t -> x_t-1
+                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+                # get init noisy x_t-1 from init image
+                if is_last_timestep:
+                    init_latents_proper = init_latents_orig
+                else:
+                    t_prev = self.scheduler.timesteps[i + 1]
+                    init_latents_proper = self.scheduler.add_noise(init_latents_orig, noise, t_prev)
+                # masking
+                latents = (init_latents_proper * mask) + (latents * (1 - mask))
+                if not is_last_resample_step:
+                    if is_last_timestep:
+                        latents = self.scheduler.add_noise(latents, noise, t)
+                    else:
+                        t_prev = self.scheduler.timesteps[i + 1]
+                        x_pred_start = predict_start_from_noise(self.scheduler, latents, t_prev, noise)
+                        latents = self.scheduler.add_noise(x_pred_start, noise, t)
 
         # scale and decode the image latents with vae
         latents = 1 / 0.18215 * latents
@@ -191,14 +208,10 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
         image = (image / 2 + 0.5).clamp(0, 1)
         image = image.cpu().permute(0, 2, 3, 1).numpy()
 
-        # run safety checker
-        safety_cheker_input = self.feature_extractor(self.numpy_to_pil(image), return_tensors="pt").to(self.device)
-        image, has_nsfw_concept = self.safety_checker(images=image, clip_input=safety_cheker_input.pixel_values)
-
         if output_type == "pil":
             image = self.numpy_to_pil(image)
 
         if not return_dict:
-            return (image, has_nsfw_concept)
+            return image, None
 
-        return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+        return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=None)
