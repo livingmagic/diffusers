@@ -31,12 +31,9 @@ from tqdm.auto import tqdm
 from .configuration_utils import ConfigMixin
 from .utils import DIFFUSERS_CACHE, BaseOutput, logging
 
-
 INDEX_FILE = "diffusion_pytorch_model.bin"
 
-
 logger = logging.get_logger(__name__)
-
 
 LOADABLE_CLASSES = {
     "diffusers": {
@@ -72,7 +69,6 @@ class ImagePipelineOutput(BaseOutput):
 
 
 class DiffusionPipeline(ConfigMixin):
-
     config_name = "model_index.json"
 
     def register_modules(self, **kwargs):
