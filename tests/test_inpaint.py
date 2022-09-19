@@ -25,19 +25,20 @@ def get_ts_index(t_T, jump_len, jump_n_sample):
             for _ in range(jump_len):
                 t = t + 1
                 ts.append(t)
-
-    ts.append(-1)
     return ts
 
 
 if __name__ == '__main__':
-    # origin_repaint_ts()
-    t_T = 50
-    jump_len = 1
-    jump_n_sample = 1
+    total_ts = 50
+    t_T = 10
+    jump_len = 2
+    jump_n_sample = 3
 
     ts = get_ts_index(t_T, jump_len, jump_n_sample)
-
+    ts = [t + total_ts - t_T for t in ts]
+    print(ts)
+    ts.extend(list(range(total_ts - t_T))[::-1])
+    print(ts)
     count = 0
     for t_last, t_cur in zip(ts[:-1], ts[1:]):
         if t_cur < t_last:

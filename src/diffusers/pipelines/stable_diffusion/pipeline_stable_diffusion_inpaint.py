@@ -36,15 +36,13 @@ def preprocess_mask(mask):
     return mask
 
 
-def predict_xstart(scheduler, sample, t, generator=None):
-    noise = torch.randn(sample.shape, generator=generator, device=sample.device)
+def predict_xstart(scheduler, sample, t, noise):
     sqrt_alpha_prod = scheduler.match_shape(torch.sqrt(scheduler.alphas_cumprod[t]), sample)
     sqrt_one_minus_alpha_prod = scheduler.match_shape(torch.sqrt(1 - scheduler.alphas_cumprod[t]), sample)
     return (sample - sqrt_one_minus_alpha_prod * noise) / sqrt_alpha_prod
 
 
-def undo_step(scheduler, sample, from_t, to_t, generator=None):
-    noise = torch.randn(sample.shape, generator=generator, device=sample.device)
+def undo_step(scheduler, sample, from_t, to_t, noise):
     # undo sample from x_t-1 to x_t
     sqrt_alpha_prod = scheduler.match_shape(torch.sqrt(scheduler.alphas_cumprod[from_t]), sample)
     sqrt_alpha_prod_to = scheduler.match_shape(torch.sqrt(scheduler.alphas_cumprod[to_t]), sample)
@@ -56,8 +54,7 @@ def undo_step(scheduler, sample, from_t, to_t, generator=None):
     return sample * sqrt_alpha_prod_to / sqrt_alpha_prod + noise * noise_coefficient / sqrt_alpha_prod
 
 
-def get_resample_timesteps(timesteps, jump_len, jump_n_sample):
-    t_T = len(timesteps)
+def get_ts_index(t_T, jump_len, jump_n_sample):
     jumps = {}
     for j in range(0, t_T - jump_len, jump_len):
         jumps[j] = jump_n_sample - 1
@@ -74,8 +71,15 @@ def get_resample_timesteps(timesteps, jump_len, jump_n_sample):
             for _ in range(jump_len):
                 t = t + 1
                 ts.append(t)
+    return ts
 
-    ts = [timesteps[t_T - i - 1] for i in ts]
+
+def get_resample_timesteps(timesteps, resample_count, jump_len, jump_n_sample):
+    total_ts = len(timesteps)
+    ts = get_ts_index(resample_count, jump_len, jump_n_sample)
+    ts = [t + total_ts - resample_count for t in ts]
+    ts.extend(list(range(total_ts - resample_count))[::-1])
+    ts = [timesteps[total_ts - i - 1] for i in ts]
     ts.append(-1)
     return ts
 
@@ -106,6 +110,7 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
             init_image: Union[torch.FloatTensor, PIL.Image.Image],
             mask_image: Union[torch.FloatTensor, PIL.Image.Image],
             num_inference_steps: Optional[int] = 50,
+            resample_count: Optional[int] = 20,
             resample_jump_len: Optional[int] = 1,
             resample_times: Optional[int] = 1,
             guidance_scale: Optional[float] = 7.5,
@@ -188,16 +193,13 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
             extra_step_kwargs["generator"] = generator
 
         latents = torch.randn(init_latents.shape, generator=generator, device=self.device)
-        timesteps = get_resample_timesteps(self.scheduler.timesteps, resample_jump_len, resample_times)
+        timesteps = get_resample_timesteps(self.scheduler.timesteps, resample_count, resample_jump_len, resample_times)
+        timestep_pairs = list(zip(timesteps[:-1], timesteps[1:]))
+        print(f"Progress count:{len(timestep_pairs)}")
 
-        for t, t_next in self.progress_bar(zip(timesteps[:-1], timesteps[1:])):
+        for t, t_next in self.progress_bar(timestep_pairs):
             # reverse if x_t -> x_t-1
             if t > t_next:
-                # masking
-                noise = torch.randn(init_latents_orig.shape, generator=generator, device=self.device)
-                init_latents_proper = self.scheduler.add_noise(init_latents_orig, noise, t)
-                latents = (init_latents_proper * mask) + (latents * (1 - mask))
-
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
 
@@ -211,8 +213,14 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+
+                # masking
+                noise = torch.randn(init_latents_orig.shape, generator=generator, device=self.device)
+                init_latents_proper = self.scheduler.add_noise(init_latents_orig, noise, t)
+                latents = (init_latents_proper * mask) + (latents * (1 - mask))
             else:
-                latents = undo_step(self.scheduler, latents, t, t_next, generator=generator)
+                noise = torch.randn(latents.shape, generator=generator, device=self.device)
+                latents = undo_step(self.scheduler, latents, t, t_next, noise)
 
         # scale and decode the image latents with vae
         latents = 1 / 0.18215 * latents
