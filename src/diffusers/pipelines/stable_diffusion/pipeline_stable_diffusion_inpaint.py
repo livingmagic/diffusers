@@ -113,7 +113,7 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
             resample_count: Optional[int] = 20,
             resample_jump_len: Optional[int] = 1,
             resample_times: Optional[int] = 1,
-            guidance_scale: Optional[float] = 7.5,
+                guidance_scale: Optional[float] = 7.5,
             eta: Optional[float] = 0.0,
             generator: Optional[torch.Generator] = None,
             output_type: Optional[str] = "pil",
@@ -200,6 +200,11 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
         for t, t_next in self.progress_bar(timestep_pairs):
             # reverse if x_t -> x_t-1
             if t > t_next:
+                # add t noise to origin latents and masking
+                noise = torch.randn(init_latents_orig.shape, generator=generator, device=self.device)
+                init_latents_proper = self.scheduler.add_noise(init_latents_orig, noise, t)
+                latents = (init_latents_proper * mask) + (latents * (1 - mask))
+
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
 
@@ -213,11 +218,6 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
-
-                # masking
-                noise = torch.randn(init_latents_orig.shape, generator=generator, device=self.device)
-                init_latents_proper = self.scheduler.add_noise(init_latents_orig, noise, t)
-                latents = (init_latents_proper * mask) + (latents * (1 - mask))
             else:
                 noise = torch.randn(latents.shape, generator=generator, device=self.device)
                 latents = undo_step(self.scheduler, latents, t, t_next, noise)

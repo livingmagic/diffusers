@@ -29,16 +29,17 @@ def get_ts_index(t_T, jump_len, jump_n_sample):
 
 
 if __name__ == '__main__':
-    total_ts = 50
-    t_T = 10
-    jump_len = 2
-    jump_n_sample = 3
+    total_ts = 250
+    t_T = 21
+    jump_len = 5
+    jump_n_sample = 10
 
     ts = get_ts_index(t_T, jump_len, jump_n_sample)
     ts = [t + total_ts - t_T for t in ts]
-    print(ts)
+    print(len(ts))
     ts.extend(list(range(total_ts - t_T))[::-1])
-    print(ts)
+    ts.append(-1)
+    print(len(ts))
     count = 0
     for t_last, t_cur in zip(ts[:-1], ts[1:]):
         if t_cur < t_last:
@@ -46,5 +47,4 @@ if __name__ == '__main__':
         else:
             print('forward:', t_last, t_cur)
         count += 1
-
     print(count)
